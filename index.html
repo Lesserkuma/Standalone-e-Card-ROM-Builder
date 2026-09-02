@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="e-Reader Web Toolkit builds standalone e-Reader ROMs and save-data files entirely in your browser.">
+    <meta name="theme-color" content="#0d0f1a">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">
+    <title>e-Reader Web Toolkit</title>
+    <link rel="stylesheet" href="css/styles.css?2">
+    <script src="js/dotcode_scan.js?2" defer></script>
+    <script src="js/patcher.js?2" defer></script>
+    <script src="js/svg.js?2" defer></script>
+    <script src="js/save_data.js?2" defer></script>
+    <script src="js/zip_archive.js?2" defer></script>
+    <script src="js/input_files.js?2" defer></script>
+    <script src="js/browser_runtime.js?2" defer></script>
+    <script src="js/app.js?2" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <h1>e-Reader Web Toolkit</h1>
+        <p class="hero-copy">
+          e-Reader Web Toolkit packages e-Reader Card content as a standalone ROM or save-data file.<br>
+          Content can be imported from save data, raw dumps, SVG files, or 1200 dpi scanned pictures of e-Reader cards.
+        </p>
+      </header>
+
+      <main>
+        <section class="drop-panel" aria-labelledby="input-title">
+          <h2 id="input-title" class="visually-hidden">Input files</h2>
+          <label id="file-drop-zone" class="drop-zone" for="file-input" tabindex="0">
+            <div class="drop-icon" aria-hidden="true">📂</div>
+            <div>
+              <h2>Drop files here or click to browse</h2>
+              <p>Add one <code>.sav</code>, one or more <code>.raw</code> codes, or one or more <code>.jpg</code>/<code>.png</code>/<code>.svg</code> images containing dot codes. For ROM output, also add a supported e-Reader <code>.gba</code> ROM.<br>Supported files may also be supplied in a <code>.zip</code> archive.</p>
+            </div>
+          </label>
+          <input id="file-input" type="file" accept=".gba,.sav,.raw,.jpg,.jpeg,.png,.svg,.zip" multiple hidden>
+        </section>
+
+        <section class="panel files-panel" aria-labelledby="files-title">
+          <div class="panel-heading">
+            <h2 id="files-title"><span aria-hidden="true">📁</span> Selected files</h2>
+            <button id="clear-button" class="ghost-button" type="button" disabled>Clear files</button>
+          </div>
+
+          <div class="file-list">
+            <article id="rom-selection" class="file-card" data-state="empty">
+              <div class="file-column">
+                <span class="file-kind">Base ROM</span>
+                <strong class="file-name">No ROM selected.</strong>
+                <span class="file-detail">Supported: <b>e-Reader (USA)</b> or <b>Card e-Reader+ (Japan)</b></span>
+              </div>
+              <span class="status-badge">Missing</span>
+              <button class="ghost-button small" type="button" data-clear="rom" aria-label="Remove base ROM" hidden>Remove</button>
+            </article>
+          </div>
+
+          <div id="content-list-heading" class="content-list-heading" hidden>
+            <h3 id="content-list-title">Content list</h3>
+            <button id="clear-content-button" class="ghost-button" type="button" data-clear="source" hidden>Clear content</button>
+          </div>
+          <div id="content-file-table" class="content-file-table" hidden>
+            <table aria-labelledby="content-list-title">
+              <thead>
+                <tr>
+                  <th scope="col">File</th>
+                  <th scope="col">Region</th>
+                  <th scope="col">Content</th>
+                  <th id="data-heading" class="data-column" scope="col" hidden>DATA</th>
+                  <th id="remove-heading" class="remove-column" scope="col" aria-label="Remove content" hidden></th>
+                </tr>
+              </thead>
+              <tbody id="content-file-rows" aria-live="polite"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="options-panel" class="panel options-panel" aria-labelledby="options-title">
+          <div class="panel-heading">
+            <h2 id="options-title"><span aria-hidden="true">⚙️</span> Options</h2>
+          </div>
+
+          <div class="option-row">
+            <div class="option-copy">
+              <span id="output-mode-label" class="option-label">Output Mode</span>
+              <span id="output-mode-description" class="option-description">Choose whether to build a patched ROM or a save data file.</span>
+            </div>
+            <button
+              id="output-mode-toggle"
+              class="mode-switch"
+              type="button"
+              role="switch"
+              aria-checked="false"
+              aria-label="Save Data output"
+              aria-describedby="output-mode-description"
+            >
+              <span class="mode-switch-thumb" aria-hidden="true"></span>
+              <span class="mode-switch-choice mode-switch-choice-rom" aria-hidden="true">ROM</span>
+              <span class="mode-switch-choice mode-switch-choice-save" aria-hidden="true">Save Data</span>
+            </button>
+          </div>
+
+          <div id="save-data-options" class="save-data-options" hidden>
+            <aside id="save-data-warning" class="save-data-warning" role="alert">
+              <span class="warning-icon" aria-hidden="true">⚠️</span>
+              <p><strong>e-Reader Calibration data has not been loaded.</strong> If you are not using <a href="https://github.com/Lesserkuma/FlashGBX" target="_blank">FlashGBX</a> to write the save data (which would keep the original calibration data intact), you can import a backup from your own e-Reader, or just keep a backup file of its current save before writing. Otherwise your e-Reader’s device-specific calibration may be lost.</p>
+            </aside>
+
+            <div class="application-title-control">
+              <label for="application-title">Set Application Title</label>
+              <input
+                id="application-title"
+                name="application-title"
+                type="text"
+                maxlength="35"
+                autocomplete="off"
+                spellcheck="false"
+                aria-describedby="application-title-help"
+              >
+              <span id="application-title-help" class="option-description"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="action-bar" aria-label="Build and download">
+          <button id="build-button" type="button" class="primary-button" disabled>
+            <span class="button-idle">Build Standalone ROM</span>
+            <span class="button-working" hidden>Validating and building…</span>
+          </button>
+          <div id="status-region" class="status-region build-status" role="status" aria-live="polite" tabindex="-1">
+            Add a base ROM and content files to continue.
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <div><b>e-Reader Web Toolkit v1.0</b> by Lesserkuma<br><small>AI disclosure: Developed with assistance from GPT-5.6<br>Source code available on <a href="https://github.com/Lesserkuma/e-Reader-Web-Toolkit" target="_blank">GitHub</a></small></div>
+        <div>
+          Technical references and validation:<br>
+          <a href="https://www.problemkaputt.de/gbatek.txt" target="_blank" rel="noopener noreferrer">GBATEK Technical Info</a> by Martin Korth<br>
+          <a href="https://github.com/mgba-emu/mgba" target="_blank" rel="noopener noreferrer">mGBA Emulator</a> by Vicki Pfau (MPL-2.0)<br>
+          <a href="https://github.com/lambda-larry/nedclib" target="_blank" rel="noopener noreferrer">Nintendo eReader Dotcode encoder/decoder</a> by CaitSith2 (GPL-2.0)<br>
+        </div>
+      </footer>
+    </div>
+
+    <noscript>
+      <p class="noscript">JavaScript is required to process binary files locally.</p>
+    </noscript>
+  </body>
+</html>
