@@ -546,10 +546,6 @@ a {
   color: var(--yellow);
 }
 
-.content-file-table tr[data-state="error"] td:not(:first-child) {
-  color: var(--red);
-}
-
 .file-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
