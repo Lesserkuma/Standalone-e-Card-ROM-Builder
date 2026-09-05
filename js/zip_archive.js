@@ -1,34 +1,56 @@
 (function (root, factory) {
   "use strict";
 
-  const api = factory();
   if (typeof module === "object" && module.exports) {
-    module.exports = api;
+    module.exports = factory(require("./binary.js"));
   } else {
-    root.EReaderZipArchive = api;
+    root.EReaderZipArchive = factory(root.EReaderBinary);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (binary) {
   "use strict";
 
+  const { crc32 } = binary;
+
+  function asBytes(input) {
+    try {
+      return binary.asBytes(input);
+    } catch (error) {
+      if (error instanceof TypeError) throw new TypeError("ZIP input must be binary data.");
+      throw error;
+    }
+  }
+
   const EOCD_SIGNATURE = 0x06054b50;
+
   const CENTRAL_FILE_SIGNATURE = 0x02014b50;
+
   const LOCAL_FILE_SIGNATURE = 0x04034b50;
+
   const ZIP64_SENTINEL_16 = 0xffff;
+
   const ZIP64_SENTINEL_32 = 0xffffffff;
+
   const MAX_ENTRY_COUNT = 512;
+
   const MAX_ENTRY_SIZE = 32 * 1024 * 1024;
+
   const MAX_TOTAL_SIZE = 128 * 1024 * 1024;
+
   const MAX_ARCHIVE_SIZE = 64 * 1024 * 1024;
+
   const MAX_EOCD_SEARCH = 0xffff + 22;
+
   const UTF8_FLAG = 0x0800;
+
   const ENCRYPTED_FLAG = 0x0001;
+
   const SUPPORTED_METHODS = new Set([0, 8]);
-  const CP437_HIGH = (
-    "ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒ"
-    + "áíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐"
-    + "└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀"
-    + "αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ "
-  );
+
+  const CP437_HIGH =
+    "ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒ" +
+    "áíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐" +
+    "└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀" +
+    "αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ";
 
   class ZipArchiveError extends Error {
     constructor(message) {
@@ -37,26 +59,18 @@
     }
   }
 
-  function asBytes(input) {
-    if (input instanceof Uint8Array) {
-      return input;
-    }
-    if (input instanceof ArrayBuffer) {
-      return new Uint8Array(input);
-    }
-    if (ArrayBuffer.isView(input)) {
-      return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-    }
-    throw new TypeError("ZIP input must be binary data.");
-  }
-
   function viewOf(bytes) {
     return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
 
   function requireRange(bytes, offset, size, label) {
-    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size)
-      || offset < 0 || size < 0 || offset + size > bytes.length) {
+    if (
+      !Number.isSafeInteger(offset) ||
+      !Number.isSafeInteger(size) ||
+      offset < 0 ||
+      size < 0 ||
+      offset + size > bytes.length
+    ) {
       throw new ZipArchiveError(`${label} is truncated.`);
     }
   }
@@ -67,24 +81,6 @@
 
   function u32(view, offset) {
     return view.getUint32(offset, true);
-  }
-
-  const CRC32_TABLE = new Uint32Array(256);
-  for (let index = 0; index < CRC32_TABLE.length; index += 1) {
-    let value = index;
-    for (let bit = 0; bit < 8; bit += 1) {
-      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    }
-    CRC32_TABLE[index] = value >>> 0;
-  }
-
-  function crc32(input) {
-    const bytes = asBytes(input);
-    let value = 0xffffffff;
-    for (const byte of bytes) {
-      value = CRC32_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8);
-    }
-    return (value ^ 0xffffffff) >>> 0;
   }
 
   function findEndOfCentralDirectory(bytes, view) {
@@ -141,9 +137,9 @@
 
   function decodeEntryName(nameBytes, extra, flags) {
     const unicodeName = unicodePathFromExtra(extra, nameBytes);
-    const decoded = unicodeName || (
-      flags & UTF8_FLAG ? decodeUtf8(nameBytes, "ZIP entry") : decodeCp437(nameBytes)
-    );
+    const decoded =
+      unicodeName ||
+      (flags & UTF8_FLAG ? decodeUtf8(nameBytes, "ZIP entry") : decodeCp437(nameBytes));
     if (decoded.includes("\u0000")) {
       throw new ZipArchiveError("A ZIP entry filename contains a null character.");
     }
@@ -183,9 +179,9 @@
       throw new ZipArchiveError("Multi-volume ZIP archives are not supported.");
     }
     if (
-      entryCount === ZIP64_SENTINEL_16
-      || directorySize === ZIP64_SENTINEL_32
-      || directoryOffset === ZIP64_SENTINEL_32
+      entryCount === ZIP64_SENTINEL_16 ||
+      directorySize === ZIP64_SENTINEL_32 ||
+      directoryOffset === ZIP64_SENTINEL_32
     ) {
       throw new ZipArchiveError("ZIP64 archives are not supported.");
     }
@@ -218,9 +214,9 @@
       const variableSize = nameLength + extraLength + commentLength;
       requireRange(bytes, cursor + 46, variableSize, "ZIP central-directory entry");
       if (
-        compressedSize === ZIP64_SENTINEL_32
-        || uncompressedSize === ZIP64_SENTINEL_32
-        || localOffset === ZIP64_SENTINEL_32
+        compressedSize === ZIP64_SENTINEL_32 ||
+        uncompressedSize === ZIP64_SENTINEL_32 ||
+        localOffset === ZIP64_SENTINEL_32
       ) {
         throw new ZipArchiveError("ZIP64 entries are not supported.");
       }
@@ -249,11 +245,13 @@
         }
         totalSize += uncompressedSize;
         if (totalSize > MAX_TOTAL_SIZE) {
-          throw new ZipArchiveError("The supported files in the ZIP exceed the 128 MiB total limit.");
+          throw new ZipArchiveError(
+            "The supported files in the ZIP exceed the 128 MiB total limit.",
+          );
         }
         entries.push({
           name,
-          nameBytes: nameBytes.slice(),
+          nameBytes: binary.cloneBytes(nameBytes),
           flags,
           method,
           expectedCrc,
@@ -284,7 +282,7 @@
       throw new ZipArchiveError(`${name} could not be opened as Deflate data.`);
     }
     const reader = stream.getReader();
-    const chunks = [];
+    const output = new Uint8Array(expectedSize);
     let size = 0;
     try {
       while (true) {
@@ -292,24 +290,24 @@
         if (done) {
           break;
         }
+        const offset = size;
         size += value.byteLength;
         if (size > expectedSize || size > MAX_ENTRY_SIZE) {
-          await reader.cancel();
           throw new ZipArchiveError(`${name} expands beyond its declared size.`);
         }
-        chunks.push(value);
+        output.set(value, offset);
       }
     } catch (error) {
+      await reader.cancel().catch(() => {});
       if (error instanceof ZipArchiveError) {
         throw error;
       }
       throw new ZipArchiveError(`${name} contains invalid Deflate data.`);
+    } finally {
+      reader.releaseLock();
     }
-    const output = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      output.set(chunk, offset);
-      offset += chunk.byteLength;
+    if (size !== expectedSize) {
+      throw new ZipArchiveError(`${name} has an incorrect extracted size.`);
     }
     return output;
   }
@@ -324,8 +322,10 @@
     const localMethod = u16(view, entry.localOffset + 8);
     const nameLength = u16(view, entry.localOffset + 26);
     const extraLength = u16(view, entry.localOffset + 28);
-    if ((localFlags & ENCRYPTED_FLAG) !== (entry.flags & ENCRYPTED_FLAG)
-      || localMethod !== entry.method) {
+    if (
+      (localFlags & ENCRYPTED_FLAG) !== (entry.flags & ENCRYPTED_FLAG) ||
+      localMethod !== entry.method
+    ) {
       throw new ZipArchiveError(`The ZIP headers for ${entry.name} are inconsistent.`);
     }
     requireRange(
@@ -334,12 +334,11 @@
       nameLength + extraLength,
       `Local ZIP header for ${entry.name}`,
     );
-    const localName = bytes.subarray(
-      entry.localOffset + 30,
-      entry.localOffset + 30 + nameLength,
-    );
-    if (localName.length !== entry.nameBytes.length
-      || localName.some((byte, index) => byte !== entry.nameBytes[index])) {
+    const localName = bytes.subarray(entry.localOffset + 30, entry.localOffset + 30 + nameLength);
+    if (
+      localName.length !== entry.nameBytes.length ||
+      localName.some((byte, index) => byte !== entry.nameBytes[index])
+    ) {
       throw new ZipArchiveError(`The ZIP filenames for ${entry.name} are inconsistent.`);
     }
     const dataOffset = entry.localOffset + 30 + nameLength + extraLength;
@@ -353,7 +352,7 @@
       if (entry.compressedSize !== entry.uncompressedSize) {
         throw new ZipArchiveError(`${entry.name} has inconsistent stored sizes.`);
       }
-      output = compressed.slice();
+      output = binary.cloneBytes(compressed);
     } else {
       output = await inflateRaw(compressed, entry.uncompressedSize, entry.name);
     }

@@ -1,13 +1,12 @@
 (function (root, factory) {
   "use strict";
 
-  const api = factory();
   if (typeof module === "object" && module.exports) {
-    module.exports = api;
+    module.exports = factory(require("./processing_limits.js"));
   } else {
-    root.EReaderInputFiles = api;
+    root.EReaderInputFiles = factory(root.EReaderProcessingLimits);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (limits) {
   "use strict";
 
   const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
@@ -17,6 +16,7 @@
     const fileFingerprints = new WeakMap();
     const scanImageDimensions = new WeakMap();
     const decodedDotcodesByFile = new WeakMap();
+    const decodedApplications = new WeakMap();
 
     function extensionOf(filename) {
       const match = /\.([^.]+)$/.exec(filename);
@@ -64,13 +64,13 @@
         return `Save size is ${formatBytes(file.size)}; expected exactly 128 KiB.`;
       }
       if (
-        kind === "RAW"
-        && file.size !== patcher.constants.RAW_LONG_SIZE
-        && file.size !== patcher.constants.RAW_SHORT_SIZE
+        kind === "RAW" &&
+        file.size !== patcher.constants.RAW_LONG_SIZE &&
+        file.size !== patcher.constants.RAW_SHORT_SIZE
       ) {
         return `${file.name} is not a supported long or short RAW strip.`;
       }
-      if ((kind === "SCAN" || kind === "SVG") && file.size > 32 * 1024 * 1024) {
+      if ((kind === "SCAN" || kind === "SVG") && file.size > limits.MAX_IMAGE_FILE_BYTES) {
         return `${file.name} exceeds the 32 MiB image limit.`;
       }
       return "";
@@ -79,7 +79,7 @@
     function readFileBytes(file) {
       let read = fileByteReads.get(file);
       if (!read) {
-        read = (async () => {
+        read = Promise.resolve().then(async () => {
           try {
             return new Uint8Array(await file.arrayBuffer());
           } catch (error) {
@@ -87,7 +87,7 @@
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`${file.name} could not be read: ${message}`);
           }
-        })();
+        });
         fileByteReads.set(file, read);
       }
       return read;
@@ -116,15 +116,16 @@
     function fileFingerprint(file) {
       let fingerprint = fileFingerprints.get(file);
       if (!fingerprint) {
-        fingerprint = (async () => {
+        fingerprint = Promise.resolve().then(async () => {
           try {
             // Scan bytes can be large and are decoded from the File itself, so
             // avoid retaining their fingerprint buffer. Binary inputs are kept
             // for validation/building and must not be read a second time.
             const kind = fileKind(file);
-            const bytes = kind === "SCAN"
-              ? new Uint8Array(await file.arrayBuffer())
-              : await readFileBytes(file);
+            const bytes =
+              kind === "SCAN"
+                ? new Uint8Array(await file.arrayBuffer())
+                : await readFileBytes(file);
             if (kind === "SCAN") {
               rememberScanImageDimensions(file, bytes);
             }
@@ -135,75 +136,113 @@
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`${file.name} could not be fingerprinted: ${message}`);
           }
-        })();
+        });
         fileFingerprints.set(file, fingerprint);
       }
       return fingerprint;
     }
 
-    function dotcodeEntriesMatch(left, right) {
-      if (
-        left.metadata.setId !== right.metadata.setId
-        || left.metadata.cardIndex !== right.metadata.cardIndex
-      ) {
-        return false;
-      }
-      const leftApplicationData = patcher.decodeRawDotcode(left.bytes, left.name);
-      const rightApplicationData = patcher.decodeRawDotcode(right.bytes, right.name);
-      return patcher.bytesEqual(leftApplicationData, rightApplicationData);
+    function dotcodeEntryKey(entry) {
+      return JSON.stringify([
+        entry.metadata.setId,
+        entry.metadata.cardIndex,
+        entry.metadata.cardType,
+      ]);
     }
 
-    function allDecodedDotcodesRemain(files, retainedEntries) {
+    function decodedApplication(entry) {
+      let cached = decodedApplications.get(entry);
+      if (!cached || !patcher.bytesEqual(cached.source, entry.bytes)) {
+        const source = Uint8Array.from(patcher.asBytes(entry.bytes));
+        cached = { source, application: patcher.decodeRawDotcode(source, entry.name) };
+        decodedApplications.set(entry, cached);
+      }
+      return cached.application;
+    }
+
+    function dotcodeEntriesMatch(left, right) {
+      if (dotcodeEntryKey(left) !== dotcodeEntryKey(right)) return false;
+      return patcher.bytesEqual(decodedApplication(left), decodedApplication(right));
+    }
+
+    function createDotcodeIndex(entries = []) {
+      const groups = new Map();
+      function has(entry) {
+        return (groups.get(dotcodeEntryKey(entry)) || []).some((candidate) =>
+          dotcodeEntriesMatch(candidate, entry),
+        );
+      }
+      function add(entry) {
+        const key = dotcodeEntryKey(entry);
+        const group = groups.get(key);
+        if (group) {
+          if (group.some((candidate) => dotcodeEntriesMatch(candidate, entry))) return false;
+          group.push(entry);
+        } else groups.set(key, [entry]);
+        return true;
+      }
+      for (const entry of entries) add(entry);
+      return Object.freeze({ has, add });
+    }
+
+    function allDecodedDotcodesRemain(files, retainedIndex) {
       const originalEntries = files
         .map((file) => decodedDotcodesByFile.get(file))
         .find((entries) => entries && entries.length > 0);
-      return !originalEntries || originalEntries.every((originalEntry) => (
-        retainedEntries.some((retainedEntry) => dotcodeEntriesMatch(originalEntry, retainedEntry))
-      ));
+      return (
+        !originalEntries ||
+        originalEntries.every((originalEntry) => retainedIndex.has(originalEntry))
+      );
     }
 
     async function filterDuplicateFiles(files, state) {
       const selected = [state.romFile, ...state.sourceFiles].filter(Boolean);
       const selectedByFingerprint = new Map();
       const knownFingerprints = new Set();
-      const retainedDotcodeEntries = state.sourceFiles.flatMap(
-        (file) => state.preparedDotcodes.get(file) || [],
+      const retainedIndex = createDotcodeIndex(
+        state.sourceFiles.flatMap((file) => state.preparedDotcodes.get(file) || []),
       );
       for (const file of selected) {
-        if (!fileSizeError(file)) {
-          const fingerprint = await fileFingerprint(file);
-          const matchingFiles = selectedByFingerprint.get(fingerprint) || [];
-          matchingFiles.push(file);
-          selectedByFingerprint.set(fingerprint, matchingFiles);
+        if (fileSizeError(file)) continue;
+        let fingerprint;
+        try {
+          fingerprint = await fileFingerprint(file);
+        } catch {
+          continue;
         }
+        const matchingFiles = selectedByFingerprint.get(fingerprint) || [];
+        matchingFiles.push(file);
+        selectedByFingerprint.set(fingerprint, matchingFiles);
       }
       for (const [fingerprint, matchingFiles] of selectedByFingerprint) {
         const kind = fileKind(matchingFiles[0]);
         if (
-          (kind === "RAW" || kind === "SCAN" || kind === "SVG")
-          && !allDecodedDotcodesRemain(matchingFiles, retainedDotcodeEntries)
-        ) {
+          ["RAW", "SCAN", "SVG"].includes(kind) &&
+          !allDecodedDotcodesRemain(matchingFiles, retainedIndex)
+        )
           continue;
-        }
         knownFingerprints.add(fingerprint);
       }
-
       const accepted = [];
       const ignored = [];
+      const rejected = [];
       for (const file of files) {
         if (!fileKind(file) || fileSizeError(file)) {
           accepted.push(file);
           continue;
         }
-        const fingerprint = await fileFingerprint(file);
-        if (knownFingerprints.has(fingerprint)) {
-          ignored.push(file);
-        } else {
-          knownFingerprints.add(fingerprint);
-          accepted.push(file);
+        try {
+          const fingerprint = await fileFingerprint(file);
+          if (knownFingerprints.has(fingerprint)) ignored.push(file);
+          else {
+            knownFingerprints.add(fingerprint);
+            accepted.push(file);
+          }
+        } catch (error) {
+          rejected.push({ file, message: error instanceof Error ? error.message : String(error) });
         }
       }
-      return { accepted, ignored };
+      return rejected.length > 0 ? { accepted, ignored, rejected } : { accepted, ignored };
     }
 
     function safeFilename(title, fallback) {
@@ -221,8 +260,8 @@
       const title = entry.metadata.embeddedTitle || "Untitled";
       const baseName = safeFilename(String(title), "dot-code scan");
       return (
-        `${baseName} - dot code ${entry.metadata.cardIndex}`
-        + ` of ${entry.metadata.cardCount}.${extension}`
+        `${baseName} - dot code ${entry.metadata.cardIndex}` +
+        ` of ${entry.metadata.cardCount}.${extension}`
       );
     }
 
@@ -231,6 +270,7 @@
     }
 
     return Object.freeze({
+      createDotcodeIndex,
       dotcodeDataFilename,
       dotcodeEntriesMatch,
       fileKind,

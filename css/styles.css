@@ -481,6 +481,31 @@ a {
   width: 7.5rem;
 }
 
+.content-file-table.has-data th:nth-child(3),
+.content-file-table.has-data td:nth-child(3) {
+  width: 32%;
+}
+
+.content-file-table .crc32-column {
+  width: 6rem;
+}
+
+.content-file-table td.crc32-column {
+  font-family: monospace;
+}
+
+.content-file-table .scan-quality {
+  display: block;
+  margin-top: .2rem;
+  color: var(--text3);
+  font-family: system-ui, sans-serif;
+  font-size: .55rem;
+}
+
+.content-file-table .scan-quality[data-uncertain="true"] {
+  color: var(--yellow);
+}
+
 .content-file-table .data-download-actions {
   display: flex;
   gap: .3rem;
